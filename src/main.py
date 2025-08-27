@@ -7,8 +7,6 @@ from google import genai
 import requests
 from bs4 import BeautifulSoup
 from dataclasses import dataclass, field
-import string
-from time import sleep
 import re
 
 
@@ -86,7 +84,7 @@ class ResumeSection:
         if self.extra_instructions:
             self.extra_instructions = "\n\n" + self.extra_instructions.strip()
 
-        file_backup: Path = self.output_path.with_suffix(".bak")
+        file_backup: Path = self.output_path.with_suffix(".bak.tex")
         with open(file_backup, "r") as f:
             self.latex_content = f.read()
 
@@ -117,8 +115,8 @@ def main():
         # this is important because the model doesn't handle them well
         listing = listing.encode("ascii", errors="ignore").decode("ascii")
 
-    latex_main_path = Path(__file__).parent.parent / "base-resume" / "resume.tex"
-    sections_path: Path = Path(__file__).parent.parent / "base-resume" / "sections"
+    latex_main_path = Path(__file__).parent.parent / "resume" / "resume.tex"
+    sections_path: Path = Path(__file__).parent.parent / "resume" / "sections"
 
     sections: list[ResumeSection] = [
         ResumeSection(

@@ -1,4 +1,4 @@
-base-resume/**
+resume/**
 .env
 __pycache__
 listing.txt
