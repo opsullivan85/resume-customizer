@@ -120,11 +120,6 @@ def main():
 
     sections: list[ResumeSection] = [
         ResumeSection(
-            description="education",
-            extra_instructions="Be sure to not make up any new information in this section",
-            output_path=sections_path / "education.tex",
-        ),
-        ResumeSection(
             description="experience",
             extra_instructions="Do not change the order of the experiences.",
             output_path=sections_path / "experience.tex",
@@ -135,8 +130,17 @@ def main():
             output_path=sections_path / "projects.tex",
         ),
         ResumeSection(
+            description="publications",
+            output_path=sections_path / "publications.tex",
+        ),
+        ResumeSection(
             description="skills",
             output_path=sections_path / "skills.tex",
+        ),
+        ResumeSection(
+            description="education",
+            extra_instructions="Be sure to not make up any new information in this section",
+            output_path=sections_path / "education.tex",
         ),
         ResumeSection(
             description="summary",
