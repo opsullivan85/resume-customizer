@@ -8,6 +8,7 @@ import requests
 from bs4 import BeautifulSoup
 from dataclasses import dataclass, field
 import re
+from time import sleep
 
 
 def convert_markdown_to_latex(text: str) -> str:
@@ -27,6 +28,9 @@ def convert_markdown_to_latex(text: str) -> str:
 
     # Convert italic: *...* → \textit{...}
     text = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"\\textit{\1}", text)
+
+    # Convert # comments to %
+    text = re.sub(r"(?<!\\)#(.*)", r"%\1", text)
 
     return text
 
@@ -88,6 +92,27 @@ class ResumeSection:
         with open(file_backup, "r") as f:
             self.latex_content = f.read()
 
+        if self.extra_instructions:
+            self.extra_instructions = "\n\nSpecific instructions for this resume section: " + self.extra_instructions.strip()
+
+def prompt_model(prompt: str, client) -> str:
+    max_tries = 5
+    response = None
+    for i in range(max_tries):
+        sleep(2 * i)
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash", contents=prompt
+            )
+            if response.text:
+                break
+            else:
+                print(f"Gemini query returned empty response {i+1}/{max_tries}")
+        except Exception as e:
+            print(f"Gemini query failed {i+1}/{max_tries}: {e}")
+    if response is None or not response.text:
+        raise Exception("Gemini API query returned no response")
+    return response.text
 
 def main():
     load_dotenv()
@@ -144,6 +169,7 @@ def main():
         ),
         ResumeSection(
             description="summary",
+            extra_instructions="Be sure to only include information avaliable in other sections of the resume here",
             output_path=sections_path / "summary.tex",
         ),
     ]
@@ -154,18 +180,15 @@ def main():
         other_sections = "\n\n".join(
             f"{s.latex_content}" for s in sections if s != section
         )
-        query = f"""You are a resume reviewing expert. Below is the text from a job posting. my resume, as well as specifically the {section.description} portion of my resume. I'm a highly qualified candidate with a masters degree in robotics engineering from WPI and a long list of prior experiences and qualifications. I'm the best candidate for this job, and it is your job to convince the hiring managers of that by creating me the perfect resume. Please taylor the below piece of my resume to best fit the job.\n\nBe sure to \\textbf{{re-phrase sections appropriately}}, you should pick out specific language from the job listing and use that same language in the resume. Move around bullet points and items for maximum impact, and change what is bolded to grab the reader's attention. Remember to still use bolded text sparingly-- there shouldn't be too much bolded in any one section. \\textbf{{Don't make up any new facts or lie.}} \\textbf{{Do not increase the amount of total text in the section}}-- if you un-comment something, you must comment out something else. Be sure to justify your changes in a comment in the output. Do not drastically change line lengths, the document is fine tuned to not have any words overflow onto the next lines.\n\nYour response should be 100% valid LaTeX. Any commentary must be in the form of a comment (use a % for this, there is no other valid for of comment). {section.extra_instructions if section.extra_instructions else ""}\n\nOver all else, adhere to instructions stated in the section of the resume section if provided.\n\n===== JOB LISTING =====\n{listing}\n\n\n\n===== RESUME SECTION TO EDIT =====\n```latex\n{section.latex_content}\n```\n\n===== OTHER SECTIONS OF RESUME =====\n```latex\n{other_sections}\n```"""
+        query = f"""You are a resume reviewing expert. Below is the text from a job posting. my resume, as well as specifically the {section.description} section of my resume. I'm the best candidate for this job, and it is your job to convince the hiring managers of that by creating me the perfect resume. Please tailor the specified section of my resume to best fit the job.\n\nBe sure to re-phrase, re-order, and re-bold sections appropriately, mirror language from the job posting. Use bolded text sparingly. **Don't make up any new facts.** Be sure to justify your changes in a comment in the output. **Do not increase the word count, only decrease it.**\n\nYour response should be 100% valid LaTeX. Any commentary must be in the form of a comment. {section.extra_instructions if section.extra_instructions else ""}\n\nOver all else, adhere to instructions stated in the section of the resume section if provided.\n\n===== JOB LISTING =====\n{listing}\n\n===== RESUME SECTION TO EDIT =====\n```latex\n{section.latex_content}\n```\n\n===== OTHER SECTIONS OF RESUME =====\n```latex\n{other_sections}\n```"""
         print(query)
         print(f"generating {section.description} section...")
         print("generating response...")
-        response = client.models.generate_content(
-            model="gemini-2.5-flash", contents=query
-        )
-        if not response.text:
-            raise Exception("Gemini API query returned no response")
+
+        response = prompt_model(query, client)
 
         # since the model can't handle any simple instructions
-        output = convert_markdown_to_latex(response.text)
+        output = convert_markdown_to_latex(response)
         
         section.latex_content = output
 
@@ -175,6 +198,12 @@ def main():
             # remove the backticks
             stripped_text = "\n".join(output.splitlines()[1:-1])
             f.write(stripped_text)
+
+    cover_letter_path = Path(__file__).parent.parent / "resume" / "cover_letter.txt"
+    cover_letter_text = prompt_model(f"""You are a cover letter writing expert. Below is the text from a job posting as well as my resume. I'm the best candidate for this job, and it is your job to convince the hiring managers of that by creating me the perfect cover letter.\n\n**Don't make up any new facts.** Be straight to the point, without being too turse or formal. \n\nYour response should be fully plain text. The cover letter should be no more than 100 words. Write the letter from my perspective (Owen Sullivan).\n\n===== JOB LISTING =====\n{listing}\n\n===== RESUME =====\n```latex\n{''.join(s.latex_content for s in sections)}\n```""", client)
+
+    with open(cover_letter_path, "w") as f:
+        f.write(cover_letter_text)
 
     # compile_latex(str(latex_main_path))
 
