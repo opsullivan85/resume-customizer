@@ -107,16 +107,17 @@ class ResumeSection:
         if self.extra_instructions:
             self.extra_instructions = "\n\nSpecific instructions for this resume section: " + self.extra_instructions.strip()
 
-def prompt_model(prompt: str, client) -> str:
+def prompt_model(prompt: str, client, instructions: str | None = None) -> str:
     max_tries = 5
     response = None
+    instructions = instructions or ""
     for i in range(max_tries):
         sleep(2 * i)
         try:
             response = client.models.generate_content(
                 model="gemini-2.5-flash", contents=prompt,
                 config=types.GenerateContentConfig(
-                    system_instruction="Your response should be 100% valid LaTeX. Any commentary must be in the form of a comment."
+                    system_instruction=instructions
                 ),
             )
             if response.text:
@@ -200,7 +201,7 @@ def main():
         print(f"generating {section.description} section...")
         print("generating response...")
 
-        response = prompt_model(query, client)
+        response = prompt_model(query, client, instructions="Your response should be 100% valid LaTeX. Any commentary must be in the form of a comment.")
 
         # since the model can't handle any simple instructions
         output = parse_to_valid_latex(response)
@@ -213,10 +214,16 @@ def main():
             f.write(output)
 
     cover_letter_path = Path(__file__).parent.parent / "resume" / "cover_letter.txt"
-    cover_letter_text = prompt_model(f"""You are a cover letter writing expert. Below is the text from a job posting as well as my resume. I'm the best candidate for this job, and it is your job to convince the hiring managers of that by creating me the perfect cover letter.\n\n**Don't make up any new facts.** Be straight to the point, without being too turse or formal. \n\nYour response should be fully plain text. The cover letter should be no more than 100 words. Write the letter from my perspective (Owen Sullivan).\n\n===== JOB LISTING =====\n{listing}\n\n===== RESUME =====\n```latex\n{''.join(s.latex_content for s in sections)}\n```""", client)
+    prompt = f"""You are a cover letter writing expert. Below is the text from a job posting as well as my resume. I'm the best candidate for this job, and it is your job to convince the hiring managers of that by creating me the perfect cover letter.\n\n**Don't make up any new facts.** Be straight to the point, without being too turse or formal. \n\nYour response should be fully plain text. The cover letter should be no more than 100 words. Write the letter from my perspective (Owen Sullivan). Start with "To whom it may concern," and end with "Best,Owen.".\n\n===== JOB LISTING =====\n{listing}\n\n===== RESUME =====\n```latex\n{''.join(s.latex_content for s in sections)}\n```"""
+    cover_letter_text = prompt_model(prompt, client, instructions="Your response should be 100% plain text, with no special formatting or characters.")
 
     with open(cover_letter_path, "w") as f:
         f.write(cover_letter_text)
+
+    try:
+        os.system(f"pandoc -V geometry:margin=1in -V mainfont=\"Calibri\" --pdf-engine=xelatex {cover_letter_path} -o {cover_letter_path.with_suffix('.pdf')}")
+    except Exception as e:
+        print(f"failed to convert cover letter to pdf: {e}")
 
     # compile_latex(str(latex_main_path))
 
