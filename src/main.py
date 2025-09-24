@@ -4,6 +4,7 @@ from typing import Optional
 from pathlib import Path
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
 import requests
 from bs4 import BeautifulSoup
 from dataclasses import dataclass, field
@@ -11,7 +12,7 @@ import re
 from time import sleep
 
 
-def convert_markdown_to_latex(text: str) -> str:
+def parse_to_valid_latex(text: str) -> str:
     """
     Converts Markdown-style formatting to LaTeX:
     - `code` → \texttt{code}
@@ -31,6 +32,17 @@ def convert_markdown_to_latex(text: str) -> str:
 
     # Convert # comments to %
     text = re.sub(r"(?<!\\)#(.*)", r"%\1", text)
+
+    # escape any & if not already escaped
+    text = re.sub(r"(?<!\\)&", r"\\&", text)
+
+    # remove any \comment{...} blocks
+    text = re.sub(r"\\comment\{.*?\}", "", text, flags=re.DOTALL)
+
+    # # remove backticks or formatting fences if they exist
+    text = re.sub(r"`{2,3}.*?latex\n((?:.*\n)*?)(?:(?:`{3})|(?:\}`{2}))", r"\1", text, flags=re.DOTALL)
+    
+    text = text.strip()
 
     return text
 
@@ -102,7 +114,10 @@ def prompt_model(prompt: str, client) -> str:
         sleep(2 * i)
         try:
             response = client.models.generate_content(
-                model="gemini-2.5-flash", contents=prompt
+                model="gemini-2.5-flash", contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction="Your response should be 100% valid LaTeX. Any commentary must be in the form of a comment."
+                ),
             )
             if response.text:
                 break
@@ -180,7 +195,7 @@ def main():
         other_sections = "\n\n".join(
             f"{s.latex_content}" for s in sections if s != section
         )
-        query = f"""You are a resume reviewing expert. Below is the text from a job posting. my resume, as well as specifically the {section.description} section of my resume. I'm the best candidate for this job, and it is your job to convince the hiring managers of that by creating me the perfect resume. Please tailor the specified section of my resume to best fit the job.\n\nBe sure to re-phrase, re-order, and re-bold sections appropriately, mirror language from the job posting. Use bolded text sparingly. **Don't make up any new facts.** Be sure to justify your changes in a comment in the output. **Do not increase the word count, only decrease it.**\n\nYour response should be 100% valid LaTeX. Any commentary must be in the form of a comment. {section.extra_instructions if section.extra_instructions else ""}\n\nOver all else, adhere to instructions stated in the section of the resume section if provided.\n\n===== JOB LISTING =====\n{listing}\n\n===== RESUME SECTION TO EDIT =====\n```latex\n{section.latex_content}\n```\n\n===== OTHER SECTIONS OF RESUME =====\n```latex\n{other_sections}\n```"""
+        query = f"""You are a resume reviewing expert. Below is the text from a job posting. my resume, as well as specifically the {section.description} section of my resume. I'm the best candidate for this job, and it is your job to convince the hiring managers of that by creating me the perfect resume. Please tailor the specified section of my resume to best fit the job.\n\nBe sure to re-phrase, re-order, and re-bold sections appropriately, mirror language from the job posting. Do not bold more than one phrase per bullet point. **Do not use any facts which cannot be directly inferred from the resume already.** Be sure to justify your changes in a comment in the output. **Do not increase the word count, only decrease it.** {section.extra_instructions if section.extra_instructions else ""}\n\nOver all else, adhere to instructions stated in the section of the resume section if provided.\n\n===== JOB LISTING =====\n{listing}\n\n===== RESUME SECTION TO EDIT =====\n```latex\n{section.latex_content}\n```\n\n===== OTHER SECTIONS OF RESUME =====\n```latex\n{other_sections}\n```"""
         print(query)
         print(f"generating {section.description} section...")
         print("generating response...")
@@ -188,16 +203,14 @@ def main():
         response = prompt_model(query, client)
 
         # since the model can't handle any simple instructions
-        output = convert_markdown_to_latex(response)
+        output = parse_to_valid_latex(response)
         
         section.latex_content = output
 
         print(output)
 
         with open(section.output_path, "w") as f:
-            # remove the backticks
-            stripped_text = "\n".join(output.splitlines()[1:-1])
-            f.write(stripped_text)
+            f.write(output)
 
     cover_letter_path = Path(__file__).parent.parent / "resume" / "cover_letter.txt"
     cover_letter_text = prompt_model(f"""You are a cover letter writing expert. Below is the text from a job posting as well as my resume. I'm the best candidate for this job, and it is your job to convince the hiring managers of that by creating me the perfect cover letter.\n\n**Don't make up any new facts.** Be straight to the point, without being too turse or formal. \n\nYour response should be fully plain text. The cover letter should be no more than 100 words. Write the letter from my perspective (Owen Sullivan).\n\n===== JOB LISTING =====\n{listing}\n\n===== RESUME =====\n```latex\n{''.join(s.latex_content for s in sections)}\n```""", client)
