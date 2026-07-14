@@ -12,6 +12,7 @@ import shutil
 import subprocess
 from ollama import generate
 from tqdm import tqdm
+from pypdf import PdfReader
 
 
 def parse_to_valid_latex(text: str) -> str:
@@ -127,6 +128,17 @@ def debug_enabled() -> bool:
 def debug_print(*args, **kwargs) -> None:
     if debug_enabled():
         print(*args, **kwargs)
+
+
+def strip_latex_comments(text: str) -> str:
+    return re.sub(r"(?m)^%.*(?:\n|$)", "", text).strip()
+
+
+def extract_pdf_text(pdf_path: Path, ascii_only: bool = True) -> str:
+    reader = PdfReader(str(pdf_path))
+    text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
+    return text.encode("ascii", errors="ignore").decode("ascii") if ascii_only else text
+
 
 def prompt_model(prompt: str, ascii_only: bool = True) -> str:
     max_tries = 5
@@ -289,6 +301,19 @@ un-bold) text as needed to highlight important points, no more than 1 bold secti
     except Exception as e:
         print(f"Error occurred while compiling resume: {e}")
         resume_pdf_path = None
+        print("Warning: resume PDF build failed; using stripped LaTeX for assessment prompt.")
+        assessment_resume_text = strip_latex_comments("\n".join(s.latex_content for s in sections))
+    else:
+        try:
+            assessment_resume_text = extract_pdf_text(resume_pdf_path)
+        except Exception as e:
+            print(f"Warning: failed to read compiled resume PDF ({e}); using stripped LaTeX for assessment prompt.")
+            assessment_resume_text = strip_latex_comments("\n".join(s.latex_content for s in sections))
+
+    resume_text_path = working_resume / "resume.txt"
+    with open(resume_text_path, "w") as f:
+        f.write(assessment_resume_text)
+    debug_print(f"wrote assessment resume text to {resume_text_path}")
 
     cover_letter_path = working_resume / "cover_letter.txt"
     progress.set_postfix_str("cover letter")
@@ -348,9 +373,7 @@ Be blunt, we have many candidates to consider.
 {listing}
 
 ===== RESUME =====
-```latex
-{'\n'.join(s.latex_content for s in sections)}
-```
+{assessment_resume_text}
 
 ===== COVER LETTER =====
 {cover_letter_text}
