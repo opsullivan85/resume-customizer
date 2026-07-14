@@ -9,4 +9,5 @@ dependencies = [
     "dotenv>=0.9.9",
     "requests>=2.32.3",
     "ollama>=0.6.0",
+    "tqdm>=4.68.4",
 ]

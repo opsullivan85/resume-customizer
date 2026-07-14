@@ -9,7 +9,9 @@ from dataclasses import dataclass, field
 import re
 from time import sleep
 import shutil
+import subprocess
 from ollama import generate
+from tqdm import tqdm
 
 
 def parse_to_valid_latex(text: str) -> str:
@@ -74,7 +76,7 @@ def get_listing_text(url: str) -> str:
     return text
 
 
-def compile_latex(tex_path: Path) -> Optional[str]:
+def compile_latex(tex_path: Path) -> Path:
     """turns the latex file (*.tex) at tex_path into a PDf
 
     Args:
@@ -85,11 +87,18 @@ def compile_latex(tex_path: Path) -> Optional[str]:
     """
 
     path_parent = Path(tex_path).parent
-    success: int = os.system(f"cd {path_parent} && latexmk -silent -pdf {tex_path}")
-    if not success:
-        return None
+    result = subprocess.run(
+        ["latexmk", "-silent", "-pdf", tex_path.name],
+        cwd=path_parent,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"latexmk failed for {tex_path}: {result.stderr.strip() or result.stdout.strip()}"
+        )
 
-    return str(Path(tex_path).with_suffix(".pdf"))
+    return Path(tex_path).with_suffix(".pdf")
 
 
 @dataclass
@@ -100,40 +109,50 @@ class ResumeSection:
     latex_content: str = field(init=False)
 
     def __post_init__(self):
-        if self.extra_instructions:
-            self.extra_instructions = "\n\n" + self.extra_instructions.strip()
-
         with open(self.output_path, "r") as f:
             self.latex_content = f.read()
 
-        if self.extra_instructions:
-            self.extra_instructions = (
-                "\n\nSpecific instructions for this resume section: "
-                + self.extra_instructions.strip()
-            )
+def debug_enabled() -> bool:
+    return os.getenv("RESUME_CUSTOMIZER_DEBUG", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def debug_print(*args, **kwargs) -> None:
+    if debug_enabled():
+        print(*args, **kwargs)
 
 def prompt_model(prompt: str, ascii_only: bool = True) -> str:
     max_tries = 5
     model = os.getenv("OLLAMA_MODEL", "llama3.2")
     for i in range(max_tries):
         if i > 0:
-            print(f"Retrying Ollama query {i+1}/{max_tries} in {2 * i} seconds...")
+            debug_print(f"Retrying Ollama query {i+1}/{max_tries} in {2 * i} seconds...")
         sleep(2 * i)
         try:
             response = generate(model=model, prompt=prompt)
         except Exception as e:
-            print(f"Ollama query failed {i+1}/{max_tries}: {e}")
+            debug_print(f"Ollama query failed {i+1}/{max_tries}: {e}")
             continue
 
-        print(f"(context used for Ollama query: {len(response.context or [])} tokens)")
+        debug_print(f"(context used for Ollama query: {len(response.context or [])} tokens)")
         response_text = response.response
         if not response_text:
-            print(f"Ollama query returned empty response {i+1}/{max_tries}")
+            debug_print(f"Ollama query returned empty response {i+1}/{max_tries}")
             continue
 
         return response_text if not ascii_only else response_text.encode("ascii", errors="ignore").decode("ascii")
 
     raise Exception("Ollama query returned no response")
+
+
+def print_paths_and_assessment(assessment: str, resume_pdf_path: Path, cover_letter_pdf_path: Path) -> None:
+    print(assessment.strip())
+    print(str(resume_pdf_path))
+    print(str(cover_letter_pdf_path))
 
 
 def main():
@@ -156,9 +175,9 @@ def main():
                 "The first argument must be a job listing URL, not a file path."
             )
         if listing_file.exists():
-            print(f"removing old listing file {listing_file}")
+            debug_print(f"removing old listing file {listing_file}")
             listing_file.unlink()
-        print(f"writing new listing to {listing_file}")
+        debug_print(f"writing new listing to {listing_file}")
         with open(listing_file, "w") as f:
             f.write(get_listing_text(sys.argv[1]))
 
@@ -166,7 +185,7 @@ def main():
         raise FileNotFoundError(
             f"listing.txt not found, please provide a job listing URL as the first argument"
         )
-    print(f"using existing listing file {listing_file}")
+    debug_print(f"using existing listing file {listing_file}")
     with open(listing_file, "r") as f:
         listing = f.read()
         # remove any non-ascii characters
@@ -206,16 +225,41 @@ def main():
         ),
     ]
 
-    for section in sections:
+    section_progress = tqdm(sections, desc="sections", unit="section")
+
+    for section in section_progress:
+        section_progress.set_postfix_str(section.description)
         other_sections = "\n\n".join(
             f"{s.latex_content}" for s in sections if s != section
         )
-        # query = f"""You are a resume reviewing expert. Below is the text from a job posting, and my resume in which we'll focus on the {section.description} section. Please tailor this section to best fit the job.\n\nBe sure to re-phrase, re-order, and re-bold sections appropriately, mirror language from the job posting. Do not bold more than one phrase per bullet point. **Do not use any facts which cannot be directly inferred from the resume already.** Be sure to justify your changes in a comment in the output. **Do not increase the word count, only decrease it.** Note that LaTeX comments are % so text after that doesn't count for the word count. If you add a bulletpoint or un-comment a block you need to remove a simmilarly sized section of text. {section.extra_instructions if section.extra_instructions else ""}\n\n Your response should be valid LaTeX. Any commentary must be in the form of a comment.\n\n===== JOB LISTING =====\n{listing}\n\n===== OTHER SECTIONS OF RESUME =====\n```latex\n{other_sections}\n```\n\n===== RESUME SECTION TO EDIT =====\n```latex\n{section.latex_content}\n```"""
-        query = f"""Update the {section.description} section of my resume (below) to best fit the job listing. Also note the other sections of my resume are attached. **CRITICAL: DO NOT LENGTHEN THE RESUME OR INDIVIDUAL LINES AT ALL. UN-COMMENTING (removing %'s at the beginning of lines) LENGTHENS THE RESUME, so any uncomment must be accompanitd by commenting out something else.**{" "+section.extra_instructions if section.extra_instructions else ""} Also do not add any information not already present. Your response should be valid LaTeX. Any commentary must be in the form of a comment. Minimize neglegable changes (adding articles, changing tense, etc.), but re-word and re-structure as needed. Bold (and un-bold) text as needed to highlight important points, no more than 1 bold section per line.\n\n\n===== JOB LISTING =====\n{listing}\n\n\n===== OTHER SECTIONS OF RESUME =====\n```latex\n{other_sections}\n```\n\n\n===== RESUME SECTION TO EDIT =====\n```latex\n{section.latex_content}\n```\n\n\n===== OPTIMIZED RESUME SECTION =====\n"""
-        print("=" * 50)
-        print(f"generating {section.description} section...")
-        print("=" * 50)
+        query = f"""Update the {section.description} section of my resume (below) to best fit the job listing
+Also note the other sections of my resume are attached. **CRITICAL: DO NOT LENGTHEN THE RESUME OR INDIVIDUAL
+LINES AT ALL. UN-COMMENTING (removing %'s at the beginning of lines) LENGTHENS THE RESUME, so any uncomment
+must be accompanitd by commenting out something else.
+**{" "+section.extra_instructions if section.extra_instructions else ""} Also do not add any information not
+already present. Your response should be valid LaTeX. Any commentary must be in the form of a comment. Minimize
+neglegable changes (adding articles, changing tense, etc.), but re-word and re-structure as needed. Bold (and
+un-bold) text as needed to highlight important points, no more than 1 bold section per line.
 
+
+===== JOB LISTING =====
+{listing}
+
+
+===== OTHER SECTIONS OF RESUME =====
+```latex
+{other_sections}
+```
+
+
+===== RESUME SECTION TO EDIT =====
+```latex
+{section.latex_content}
+```
+
+
+===== OPTIMIZED RESUME SECTION =====
+"""
         response = prompt_model(query)
 
         # since the model can't handle any simple instructions
@@ -224,26 +268,82 @@ def main():
         
         section.latex_content = output
 
-        print(output)
+        debug_print(output)
 
         with open(section.output_path, "w") as f:
             f.write(output)
         with open(section.output_path.with_suffix(".raw"), "w") as f:
             f.write(response)
 
-    compile_latex(working_resume / "resume.tex")
+    resume_pdf_path = compile_latex(working_resume / "resume.tex")
 
     cover_letter_path = working_resume / "cover_letter.txt"
-    prompt = f"""You are a cover letter writing expert. Below is the text from a job posting as well as my resume. I'm the best candidate for this job, and it is your job to convince the hiring managers of that by creating me the perfect cover letter.\n\n**Don't make up any new facts.** Be straight to the point, without being too turse or formal. \n\nYour response should be fully plain text. The cover letter should be no more than 100 words. Write the letter from my perspective (Owen Sullivan). Start with "To whom it may concern," and end with "Best,Owen.".\n\n===== JOB LISTING =====\n{listing}\n\n===== RESUME =====\n```latex\n{''.join(s.latex_content for s in sections)}\n```"""
+    prompt = f"""You are a cover letter writing expert. Below is the text from a job posting as well as my
+resume. I'm the best candidate for this job, and it is your job to convince the hiring managers of that
+by creating me the perfect cover letter. **Don't make up any new facts.** Be straight to the point, without
+being too turse or formal. 
+
+Your response should be fully plain text. The cover letter should be no more than 100 words. Write the letter
+from my perspective (Owen Sullivan). Start with "To whom it may concern," and end with "Best,\\nOwen.".
+
+
+===== JOB LISTING =====
+{listing}
+
+
+===== RESUME =====
+```latex
+{''.join(s.latex_content for s in sections)}
+```"""
+    cover_letter_progress = tqdm(total=1, desc="cover letter", unit="step")
     cover_letter_text = prompt_model(prompt)
+    cover_letter_progress.update(1)
+    cover_letter_progress.close()
 
     with open(cover_letter_path, "w") as f:
         f.write(cover_letter_text)
 
-    try:
-        os.system(f"pandoc -V geometry:margin=1in -V mainfont=\"Calibri\" --pdf-engine=xelatex {cover_letter_path} -o {cover_letter_path.with_suffix('.pdf')}")
-    except Exception as e:
-        print(f"failed to convert cover letter to pdf: {e}")
+    cover_letter_pdf_path = cover_letter_path.with_suffix(".pdf")
+    result = subprocess.run(
+        [
+            "pandoc",
+            "-V",
+            "geometry:margin=1in",
+            "-V",
+            "mainfont=Calibri",
+            "--pdf-engine=xelatex",
+            str(cover_letter_path),
+            "-o",
+            str(cover_letter_pdf_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"pandoc failed for {cover_letter_path}: {result.stderr.strip() or result.stdout.strip()}"
+        )
+
+    assessment_prompt = f"""Briefly, does this resume look like a good candidate for the job description?
+
+===== JOB LISTING =====
+{listing}
+
+===== RESUME =====
+```latex
+{''.join(s.latex_content for s in sections)}
+```
+
+===== COVER LETTER =====
+{cover_letter_text}
+"""
+    assessment_text = prompt_model(assessment_prompt, ascii_only=False)
+
+    print_paths_and_assessment(
+        assessment_text,
+        resume_pdf_path,
+        cover_letter_pdf_path,
+    )
 
 
 
