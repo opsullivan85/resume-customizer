@@ -149,10 +149,14 @@ def prompt_model(prompt: str, ascii_only: bool = True) -> str:
     raise Exception("Ollama query returned no response")
 
 
-def print_paths_and_assessment(assessment: str, resume_pdf_path: Path, cover_letter_pdf_path: Path) -> None:
+def print_paths_and_assessment(assessment: str, resume_pdf_path: str, cover_letter_pdf_path: str) -> None:
+    print()
+    print("===== SUMMARY =====")
     print(assessment.strip())
-    print(str(resume_pdf_path))
-    print(str(cover_letter_pdf_path))
+    print()
+    print("===== FILE PATHS =====")
+    print(f"Resume PDF: {resume_pdf_path}")
+    print(f"Cover Letter PDF: {cover_letter_pdf_path}")
 
 
 def main():
@@ -225,10 +229,10 @@ def main():
         ),
     ]
 
-    section_progress = tqdm(sections, desc="sections", unit="section")
+    progress = tqdm(total=len(sections) + 2, desc="progress", unit="step")
 
-    for section in section_progress:
-        section_progress.set_postfix_str(section.description)
+    for section in sections:
+        progress.set_postfix_str(f"section: {section.description}")
         other_sections = "\n\n".join(
             f"{s.latex_content}" for s in sections if s != section
         )
@@ -275,9 +279,16 @@ un-bold) text as needed to highlight important points, no more than 1 bold secti
         with open(section.output_path.with_suffix(".raw"), "w") as f:
             f.write(response)
 
-    resume_pdf_path = compile_latex(working_resume / "resume.tex")
+        progress.update(1)
+
+    try:
+        resume_pdf_path = compile_latex(working_resume / "resume.tex")
+    except Exception as e:
+        print(f"Error occurred while compiling resume: {e}")
+        resume_pdf_path = None
 
     cover_letter_path = working_resume / "cover_letter.txt"
+    progress.set_postfix_str("cover letter")
     prompt = f"""You are a cover letter writing expert. Below is the text from a job posting as well as my
 resume. I'm the best candidate for this job, and it is your job to convince the hiring managers of that
 by creating me the perfect cover letter. **Don't make up any new facts.** Be straight to the point, without
@@ -293,12 +304,10 @@ from my perspective (Owen Sullivan). Start with "To whom it may concern," and en
 
 ===== RESUME =====
 ```latex
-{''.join(s.latex_content for s in sections)}
+{'\n'.join(s.latex_content for s in sections)}
 ```"""
-    cover_letter_progress = tqdm(total=1, desc="cover letter", unit="step")
     cover_letter_text = prompt_model(prompt)
-    cover_letter_progress.update(1)
-    cover_letter_progress.close()
+    progress.update(1)
 
     with open(cover_letter_path, "w") as f:
         f.write(cover_letter_text)
@@ -320,29 +329,37 @@ from my perspective (Owen Sullivan). Start with "To whom it may concern," and en
         text=True,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"pandoc failed for {cover_letter_path}: {result.stderr.strip() or result.stdout.strip()}"
-        )
+        try:
+            raise RuntimeError(
+                f"pandoc failed for {cover_letter_path}: {result.stderr.strip() or result.stdout.strip()}"
+            )
+        except Exception as e:
+            print(f"Error occurred while compiling cover letter: {e}")
+            cover_letter_pdf_path = None
 
-    assessment_prompt = f"""Briefly, does this resume look like a good candidate for the job description?
+    progress.set_postfix_str("assessment")
+    assessment_prompt = f"""**Very briefly** (one paragraph max), does this resume look like a good candidate for our job description?
+Be blunt, we have many candidates to consider.
 
 ===== JOB LISTING =====
 {listing}
 
 ===== RESUME =====
 ```latex
-{''.join(s.latex_content for s in sections)}
+{'\n'.join(s.latex_content for s in sections)}
 ```
 
 ===== COVER LETTER =====
 {cover_letter_text}
 """
     assessment_text = prompt_model(assessment_prompt, ascii_only=False)
+    progress.update(1)
+    progress.close()
 
     print_paths_and_assessment(
         assessment_text,
-        resume_pdf_path,
-        cover_letter_pdf_path,
+        str(resume_pdf_path or "Failed to compile resume PDF"),
+        str(cover_letter_pdf_path or "Failed to compile cover letter PDF"),
     )
 
 
