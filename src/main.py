@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 from dataclasses import dataclass, field
 import re
 from time import sleep
+import shutil
 
 
 def parse_to_valid_latex(text: str) -> str:
@@ -100,12 +101,14 @@ class ResumeSection:
         if self.extra_instructions:
             self.extra_instructions = "\n\n" + self.extra_instructions.strip()
 
-        file_backup: Path = self.output_path.with_suffix(".bak.tex")
-        with open(file_backup, "r") as f:
+        with open(self.output_path, "r") as f:
             self.latex_content = f.read()
 
         if self.extra_instructions:
-            self.extra_instructions = "\n\nSpecific instructions for this resume section: " + self.extra_instructions.strip()
+            self.extra_instructions = (
+                "\n\nSpecific instructions for this resume section: "
+                + self.extra_instructions.strip()
+            )
 
 def prompt_model(prompt: str, client, instructions: str | None = None) -> str:
     max_tries = 5
@@ -132,6 +135,17 @@ def prompt_model(prompt: str, client, instructions: str | None = None) -> str:
 
 def main():
     load_dotenv()
+
+    resume_root = Path(__file__).parent.parent / "resume"
+    source_resume = resume_root / "source"
+    working_resume = resume_root / "working"
+
+    # Always start from a clean copy of the resume
+    if working_resume.exists():
+        shutil.rmtree(working_resume)
+
+    shutil.copytree(source_resume, working_resume)
+
     listing_file = Path(__file__).parent.parent / "listing.txt"
     if len(sys.argv) > 1:
         if not sys.argv[1].startswith("http"):
@@ -156,8 +170,7 @@ def main():
         # this is important because the model doesn't handle them well
         listing = listing.encode("ascii", errors="ignore").decode("ascii")
 
-    latex_main_path = Path(__file__).parent.parent / "resume" / "resume.tex"
-    sections_path: Path = Path(__file__).parent.parent / "resume" / "sections"
+    sections_path: Path = working_resume / "sections"
 
     sections: list[ResumeSection] = [
         ResumeSection(
@@ -171,8 +184,8 @@ def main():
             output_path=sections_path / "projects.tex",
         ),
         ResumeSection(
-            description="publications",
-            output_path=sections_path / "publications.tex",
+            description="research",
+            output_path=sections_path / "research.tex",
         ),
         ResumeSection(
             description="skills",
@@ -213,7 +226,7 @@ def main():
         with open(section.output_path, "w") as f:
             f.write(output)
 
-    cover_letter_path = Path(__file__).parent.parent / "resume" / "cover_letter.txt"
+    cover_letter_path = working_resume / "cover_letter.txt"
     prompt = f"""You are a cover letter writing expert. Below is the text from a job posting as well as my resume. I'm the best candidate for this job, and it is your job to convince the hiring managers of that by creating me the perfect cover letter.\n\n**Don't make up any new facts.** Be straight to the point, without being too turse or formal. \n\nYour response should be fully plain text. The cover letter should be no more than 100 words. Write the letter from my perspective (Owen Sullivan). Start with "To whom it may concern," and end with "Best,Owen.".\n\n===== JOB LISTING =====\n{listing}\n\n===== RESUME =====\n```latex\n{''.join(s.latex_content for s in sections)}\n```"""
     cover_letter_text = prompt_model(prompt, client, instructions="Your response should be 100% plain text, with no special formatting or characters.")
 
