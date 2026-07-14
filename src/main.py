@@ -23,6 +23,9 @@ def parse_to_valid_latex(text: str) -> str:
 
     Handles non-overlapping, properly nested formatting.
     """
+    # Remove fenced code block delimiters before inline code conversion.
+    text = re.sub(r"(?m)^```(?:latex)?\s*$", "", text)
+
     # Convert inline code: `...` → \texttt{...}
     text = re.sub(r"`([^`]+?)`", r"\\texttt{\1}", text)
 
@@ -44,7 +47,7 @@ def parse_to_valid_latex(text: str) -> str:
     # remove any \comment{...} blocks
     text = re.sub(r"\\comment\{.*?\}", "", text, flags=re.DOTALL)
 
-    # # remove backticks or formatting fences if they exist
+    # Remove any remaining backtick fences if they exist.
     text = re.sub(r"`{2,3}.*?latex\n((?:.*\n)*?)(?:(?:`{3})|(?:\}`{2}))", r"\1", text, flags=re.DOTALL)
     
     text = text.strip()
