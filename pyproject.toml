@@ -7,5 +7,6 @@ requires-python = ">=3.13"
 dependencies = [
     "beautifulsoup4>=4.13.5",
     "dotenv>=0.9.9",
-    "google-genai>=1.31.0",
+    "requests>=2.32.3",
+    "ollama>=0.6.0",
 ]

@@ -3,14 +3,13 @@ import os
 from typing import Optional
 from pathlib import Path
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
 import requests
 from bs4 import BeautifulSoup
 from dataclasses import dataclass, field
 import re
 from time import sleep
 import shutil
+from ollama import generate
 
 
 def parse_to_valid_latex(text: str) -> str:
@@ -72,7 +71,7 @@ def get_listing_text(url: str) -> str:
     return text
 
 
-def compile_latex(tex_path: str) -> Optional[str]:
+def compile_latex(tex_path: Path) -> Optional[str]:
     """turns the latex file (*.tex) at tex_path into a PDf
 
     Args:
@@ -110,28 +109,28 @@ class ResumeSection:
                 + self.extra_instructions.strip()
             )
 
-def prompt_model(prompt: str, client, instructions: str | None = None) -> str:
+def prompt_model(prompt: str) -> str:
     max_tries = 5
-    response = None
-    instructions = instructions or ""
+    model = os.getenv("OLLAMA_MODEL", "llama3.2")
     for i in range(max_tries):
+        if i > 0:
+            print(f"Retrying Ollama query {i+1}/{max_tries} in {2 * i} seconds...")
         sleep(2 * i)
         try:
-            response = client.models.generate_content(
-                model="gemini-2.5-flash", contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=instructions
-                ),
-            )
-            if response.text:
-                break
-            else:
-                print(f"Gemini query returned empty response {i+1}/{max_tries}")
+            response = generate(model=model, prompt=prompt)
         except Exception as e:
-            print(f"Gemini query failed {i+1}/{max_tries}: {e}")
-    if response is None or not response.text:
-        raise Exception("Gemini API query returned no response")
-    return response.text
+            print(f"Ollama query failed {i+1}/{max_tries}: {e}")
+            continue
+
+        response_text = response.response
+        if not response_text:
+            print(f"Ollama query returned empty response {i+1}/{max_tries}")
+            continue
+
+        return response_text
+
+    raise Exception("Ollama query returned no response")
+
 
 def main():
     load_dotenv()
@@ -203,18 +202,16 @@ def main():
         ),
     ]
 
-    client = genai.Client()
-
     for section in sections:
         other_sections = "\n\n".join(
             f"{s.latex_content}" for s in sections if s != section
         )
-        query = f"""You are a resume reviewing expert. Below is the text from a job posting. my resume, as well as specifically the {section.description} section of my resume. I'm the best candidate for this job, and it is your job to convince the hiring managers of that by creating me the perfect resume. Please tailor the specified section of my resume to best fit the job.\n\nBe sure to re-phrase, re-order, and re-bold sections appropriately, mirror language from the job posting. Do not bold more than one phrase per bullet point. **Do not use any facts which cannot be directly inferred from the resume already.** Be sure to justify your changes in a comment in the output. **Do not increase the word count, only decrease it.** {section.extra_instructions if section.extra_instructions else ""}\n\nOver all else, adhere to instructions stated in the section of the resume section if provided.\n\n===== JOB LISTING =====\n{listing}\n\n===== RESUME SECTION TO EDIT =====\n```latex\n{section.latex_content}\n```\n\n===== OTHER SECTIONS OF RESUME =====\n```latex\n{other_sections}\n```"""
-        print(query)
+        query = f"""You are a resume reviewing expert. Below is the text from a job posting. my resume, as well as specifically the {section.description} section of my resume. I'm the best candidate for this job, and it is your job to convince the hiring managers of that by creating me the perfect resume. Please tailor the specified section of my resume to best fit the job.\n\nBe sure to re-phrase, re-order, and re-bold sections appropriately, mirror language from the job posting. Do not bold more than one phrase per bullet point. **Do not use any facts which cannot be directly inferred from the resume already.** Be sure to justify your changes in a comment in the output. **Do not increase the word count, only decrease it.** {section.extra_instructions if section.extra_instructions else ""}\n\nOver all else, adhere to instructions stated in the section of the resume section if provided. Your response should be 100% valid LaTeX. Any commentary must be in the form of a comment.\n\n===== JOB LISTING =====\n{listing}\n\n===== RESUME SECTION TO EDIT =====\n```latex\n{section.latex_content}\n```\n\n===== OTHER SECTIONS OF RESUME =====\n```latex\n{other_sections}\n```"""
+        print("=" * 50)
         print(f"generating {section.description} section...")
-        print("generating response...")
+        print("=" * 50)
 
-        response = prompt_model(query, client, instructions="Your response should be 100% valid LaTeX. Any commentary must be in the form of a comment.")
+        response = prompt_model(query)
 
         # since the model can't handle any simple instructions
         output = parse_to_valid_latex(response)
@@ -226,9 +223,11 @@ def main():
         with open(section.output_path, "w") as f:
             f.write(output)
 
+    compile_latex(working_resume / "resume.tex")
+
     cover_letter_path = working_resume / "cover_letter.txt"
     prompt = f"""You are a cover letter writing expert. Below is the text from a job posting as well as my resume. I'm the best candidate for this job, and it is your job to convince the hiring managers of that by creating me the perfect cover letter.\n\n**Don't make up any new facts.** Be straight to the point, without being too turse or formal. \n\nYour response should be fully plain text. The cover letter should be no more than 100 words. Write the letter from my perspective (Owen Sullivan). Start with "To whom it may concern," and end with "Best,Owen.".\n\n===== JOB LISTING =====\n{listing}\n\n===== RESUME =====\n```latex\n{''.join(s.latex_content for s in sections)}\n```"""
-    cover_letter_text = prompt_model(prompt, client, instructions="Your response should be 100% plain text, with no special formatting or characters.")
+    cover_letter_text = prompt_model(prompt)
 
     with open(cover_letter_path, "w") as f:
         f.write(cover_letter_text)
@@ -238,7 +237,6 @@ def main():
     except Exception as e:
         print(f"failed to convert cover letter to pdf: {e}")
 
-    # compile_latex(str(latex_main_path))
 
 
 if __name__ == "__main__":
