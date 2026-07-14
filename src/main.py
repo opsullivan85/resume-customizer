@@ -30,6 +30,9 @@ def parse_to_valid_latex(text: str) -> str:
     # Convert italic: *...* → \textit{...}
     text = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"\\textit{\1}", text)
 
+    # For some reason the model is outputting \cveevent instead of \cvevent, so fix that
+    text = re.sub(r"(?m)^\\cveevent", r"\\cvevent", text)
+
     # Convert # comments to %
     text = re.sub(r"(?<!\\)#(.*)", r"%\1", text)
 
@@ -82,7 +85,7 @@ def compile_latex(tex_path: Path) -> Optional[str]:
     """
 
     path_parent = Path(tex_path).parent
-    success: int = os.system(f"cd {path_parent} && latexmk -pdf {tex_path}")
+    success: int = os.system(f"cd {path_parent} && latexmk -silent -pdf {tex_path}")
     if not success:
         return None
 
@@ -109,7 +112,7 @@ class ResumeSection:
                 + self.extra_instructions.strip()
             )
 
-def prompt_model(prompt: str) -> str:
+def prompt_model(prompt: str, ascii_only: bool = True) -> str:
     max_tries = 5
     model = os.getenv("OLLAMA_MODEL", "llama3.2")
     for i in range(max_tries):
@@ -122,12 +125,13 @@ def prompt_model(prompt: str) -> str:
             print(f"Ollama query failed {i+1}/{max_tries}: {e}")
             continue
 
+        print(f"(context used for Ollama query: {len(response.context or [])} tokens)")
         response_text = response.response
         if not response_text:
             print(f"Ollama query returned empty response {i+1}/{max_tries}")
             continue
 
-        return response_text
+        return response_text if not ascii_only else response_text.encode("ascii", errors="ignore").decode("ascii")
 
     raise Exception("Ollama query returned no response")
 
@@ -174,12 +178,12 @@ def main():
     sections: list[ResumeSection] = [
         ResumeSection(
             description="experience",
-            extra_instructions="Do not change the order of the experiences.",
+            extra_instructions="Do not change the order of the experiences. At most 3 may have bullet points, the rest must be the cvevent only.",
             output_path=sections_path / "experience.tex",
         ),
         ResumeSection(
             description="projects",
-            extra_instructions="This section should be tailored to highlight the most relevant projects for the job listing. Be sure to switch around which projects are presented to maximize impact, order the projects in order of relevance, and change the descriptions to highlight the most relevant aspects of each project.",
+            extra_instructions="Re-order the projects in order of relevance. Do not have more than 4 projects listed.",
             output_path=sections_path / "projects.tex",
         ),
         ResumeSection(
@@ -192,7 +196,7 @@ def main():
         ),
         ResumeSection(
             description="education",
-            extra_instructions="Be sure to not make up any new information in this section",
+            # extra_instructions="Be sure to not make up any new information in this section",
             output_path=sections_path / "education.tex",
         ),
         ResumeSection(
@@ -206,7 +210,8 @@ def main():
         other_sections = "\n\n".join(
             f"{s.latex_content}" for s in sections if s != section
         )
-        query = f"""You are a resume reviewing expert. Below is the text from a job posting. my resume, as well as specifically the {section.description} section of my resume. I'm the best candidate for this job, and it is your job to convince the hiring managers of that by creating me the perfect resume. Please tailor the specified section of my resume to best fit the job.\n\nBe sure to re-phrase, re-order, and re-bold sections appropriately, mirror language from the job posting. Do not bold more than one phrase per bullet point. **Do not use any facts which cannot be directly inferred from the resume already.** Be sure to justify your changes in a comment in the output. **Do not increase the word count, only decrease it.** {section.extra_instructions if section.extra_instructions else ""}\n\nOver all else, adhere to instructions stated in the section of the resume section if provided. Your response should be 100% valid LaTeX. Any commentary must be in the form of a comment.\n\n===== JOB LISTING =====\n{listing}\n\n===== RESUME SECTION TO EDIT =====\n```latex\n{section.latex_content}\n```\n\n===== OTHER SECTIONS OF RESUME =====\n```latex\n{other_sections}\n```"""
+        # query = f"""You are a resume reviewing expert. Below is the text from a job posting, and my resume in which we'll focus on the {section.description} section. Please tailor this section to best fit the job.\n\nBe sure to re-phrase, re-order, and re-bold sections appropriately, mirror language from the job posting. Do not bold more than one phrase per bullet point. **Do not use any facts which cannot be directly inferred from the resume already.** Be sure to justify your changes in a comment in the output. **Do not increase the word count, only decrease it.** Note that LaTeX comments are % so text after that doesn't count for the word count. If you add a bulletpoint or un-comment a block you need to remove a simmilarly sized section of text. {section.extra_instructions if section.extra_instructions else ""}\n\n Your response should be valid LaTeX. Any commentary must be in the form of a comment.\n\n===== JOB LISTING =====\n{listing}\n\n===== OTHER SECTIONS OF RESUME =====\n```latex\n{other_sections}\n```\n\n===== RESUME SECTION TO EDIT =====\n```latex\n{section.latex_content}\n```"""
+        query = f"""Update the {section.description} section of my resume (below) to best fit the job listing. Also note the other sections of my resume are attached. **CRITICAL: DO NOT LENGTHEN THE RESUME OR INDIVIDUAL LINES AT ALL. UN-COMMENTING (removing %'s at the beginning of lines) LENGTHENS THE RESUME, so any uncomment must be accompanitd by commenting out something else.**{" "+section.extra_instructions if section.extra_instructions else ""} Also do not add any information not already present. Your response should be valid LaTeX. Any commentary must be in the form of a comment. Minimize neglegable changes (adding articles, changing tense, etc.), but re-word and re-structure as needed. Bold (and un-bold) text as needed to highlight important points, no more than 1 bold section per line.\n\n\n===== JOB LISTING =====\n{listing}\n\n\n===== OTHER SECTIONS OF RESUME =====\n```latex\n{other_sections}\n```\n\n\n===== RESUME SECTION TO EDIT =====\n```latex\n{section.latex_content}\n```\n\n\n===== OPTIMIZED RESUME SECTION =====\n"""
         print("=" * 50)
         print(f"generating {section.description} section...")
         print("=" * 50)
@@ -215,6 +220,7 @@ def main():
 
         # since the model can't handle any simple instructions
         output = parse_to_valid_latex(response)
+        # write response and output to tmp files for comparison
         
         section.latex_content = output
 
@@ -222,6 +228,8 @@ def main():
 
         with open(section.output_path, "w") as f:
             f.write(output)
+        with open(section.output_path.with_suffix(".raw"), "w") as f:
+            f.write(response)
 
     compile_latex(working_resume / "resume.tex")
 
