@@ -24,8 +24,10 @@ def parse_to_valid_latex(text: str) -> str:
 
     Handles non-overlapping, properly nested formatting.
     """
-    # Remove fenced code block delimiters before inline code conversion.
-    text = re.sub(r"(?m)^```(?:latex)?\s*$", "", text)
+    # Keep only fenced code block contents and discard surrounding prose.
+    fenced_blocks = re.findall(r"```(?:[a-zA-Z0-9_-]+)?\s*\n(.*?)```", text, flags=re.DOTALL)
+    if fenced_blocks:
+        text = "\n".join(block.strip() for block in fenced_blocks)
 
     # Convert inline code: `...` → \texttt{...}
     text = re.sub(r"`([^`]+?)`", r"\\texttt{\1}", text)
@@ -311,7 +313,7 @@ un-bold) text as needed to highlight important points, no more than 1 bold secti
             assessment_resume_text = strip_latex_comments("\n".join(s.latex_content for s in sections))
 
     resume_text_path = working_resume / "resume.txt"
-    with open(resume_text_path, "w") as f:
+    with open(resume_text_path, "w", encoding="utf-8") as f:
         f.write(assessment_resume_text)
     debug_print(f"wrote assessment resume text to {resume_text_path}")
 
