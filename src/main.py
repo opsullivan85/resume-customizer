@@ -134,10 +134,10 @@ def strip_latex_comments(text: str) -> str:
     return re.sub(r"(?m)^%.*(?:\n|$)", "", text).strip()
 
 
-def extract_pdf_text(pdf_path: Path, ascii_only: bool = True) -> str:
+def extract_pdf_text(pdf_path: Path, utf8_only: bool = True) -> str:
     reader = PdfReader(str(pdf_path))
     text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
-    return text.encode("ascii", errors="ignore").decode("ascii") if ascii_only else text
+    return text.encode("utf-8", errors="ignore").decode("utf-8") if utf8_only else text
 
 
 def prompt_model(prompt: str, ascii_only: bool = True) -> str:
@@ -185,7 +185,7 @@ def main():
     if working_resume.exists():
         shutil.rmtree(working_resume)
 
-    shutil.copytree(source_resume, working_resume)
+    shutil.copytree(source_resume, working_resume, ignore=shutil.ignore_patterns(".*"))
 
     listing_file = Path(__file__).parent.parent / "listing.txt"
     if len(sys.argv) > 1:
